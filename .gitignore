@@ -1,0 +1,7 @@
+# 大きい生成物・取得物はバージョン管理しない
+build/*.iso
+build/work/
+*.qcow2
+*.img
+*.raw
+vm/disks/
