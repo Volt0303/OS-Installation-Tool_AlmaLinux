@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# 容量拡張：復元先がマスターより大きい場合に、ディスクを使い切る
+#   GPT修復 → パーティション拡張 → pvresize → lvextend → xfs_growfs
+#
+#   使い方: fandf-expand /dev/sda
+#
+set -uo pipefail
+. /usr/local/bin/fandf-common
+
+DISK="${1:-}"
+VG="${VG:-almalinux}"      # ボリュームグループ名
+LV="${LV:-root}"           # 拡張対象LV（増加分は root へ割当：客先確定）
+
+[ -b "$DISK" ] || { c_err "使い方: fandf-expand /dev/sdX"; exit 1; }
+
+# --- LVMのPVが乗っている「最後のパーティション」を特定 -------------------
+PVPART="$(pvs --noheadings -o pv_name 2>/dev/null | tr -d ' ' | grep "^${DISK}" | tail -1)"
+if [ -z "$PVPART" ]; then
+  PVPART="$(lsblk -lno NAME,FSTYPE "$DISK" | awk '$2=="LVM2_member"{print "/dev/"$1}' | tail -1)"
+fi
+[ -n "$PVPART" ] || { c_err "LVMのPVパーティションが見つかりません"; exit 1; }
+PARTNUM="${PVPART##*[!0-9]}"
+
+log "拡張開始 disk=$DISK pv=$PVPART part=$PARTNUM vg=$VG lv=$LV"
+
+# --- 空き容量の確認：無ければ何もしない（同容量ケース）------------------
+DISK_B=$(blockdev --getsize64 "$DISK")
+PART_END=$(partx -gro END "$PVPART" 2>/dev/null | tr -d ' ')
+FREE_B=$(( DISK_B - (PART_END * 512) ))
+if [ "$FREE_B" -lt $((1024*1024*1024)) ]; then      # 空きが1GB未満なら拡張不要
+  c_ok "拡張の必要はありません（同容量／空き領域なし）"
+  logj "expand_skip" "free=${FREE_B}B"
+  exit 0
+fi
+echo "  未使用領域: $(( FREE_B / 1024 / 1024 / 1024 )) GB → 拡張します"
+
+step() { echo "  - $1"; log "拡張: $1"; }
+
+# --- 1. GPTバックアップヘッダをディスク末尾へ移動 -----------------------
+# （小さいディスクのイメージを大きいディスクへ復元すると旧位置に残るため必須）
+step "GPTバックアップヘッダを末尾へ移動"
+sgdisk -e "$DISK" >/dev/null 2>&1 || c_warn "    sgdisk -e に失敗（続行）"
+
+# --- 2. パーティションを末尾まで拡張 ------------------------------------
+step "パーティション $PARTNUM を拡張"
+if command -v growpart >/dev/null 2>&1; then
+  growpart "$DISK" "$PARTNUM" >/dev/null 2>&1 || c_warn "    growpart 警告（続行）"
+else
+  echo ", +" | sfdisk -N "$PARTNUM" --force "$DISK" >/dev/null 2>&1 \
+    || { c_err "パーティション拡張に失敗しました"; logj "expand_fail" "sfdisk"; exit 1; }
+fi
+partprobe "$DISK" >/dev/null 2>&1 || partx -u "$DISK" >/dev/null 2>&1 || true
+udevadm settle >/dev/null 2>&1 || sleep 2
+
+# --- 3. PV を拡張 --------------------------------------------------------
+step "物理ボリューム(PV)を拡張"
+pvresize "$PVPART" >/dev/null 2>&1 || { c_err "pvresize に失敗しました"; logj "expand_fail" "pvresize"; exit 1; }
+
+# --- 4. LV を拡張（空き全部を root へ）----------------------------------
+step "論理ボリューム ${VG}/${LV} を拡張"
+vgchange -ay "$VG" >/dev/null 2>&1 || true
+lvextend -l +100%FREE "/dev/${VG}/${LV}" >/dev/null 2>&1 \
+  || c_warn "    lvextend 警告（既に最大の可能性）"
+
+# --- 5. XFS を拡張（※XFSはマウント中でないと拡張できない）--------------
+step "ファイルシステム(XFS)を拡張"
+MP="$(mktemp -d)"
+if mount "/dev/${VG}/${LV}" "$MP" 2>/dev/null; then
+  xfs_growfs "$MP" >/dev/null 2>&1 || c_warn "    xfs_growfs 警告"
+  SIZE="$(df -h "$MP" | awk 'NR==2{print $2}')"
+  umount "$MP"
+  c_ok "拡張完了：${VG}/${LV} → ${SIZE}"
+  logj "expand_ok" "lv=${VG}/${LV} size=${SIZE}"
+else
+  c_err "ファイルシステムをマウントできず拡張できませんでした"
+  logj "expand_fail" "mount"
+  rmdir "$MP"; exit 1
+fi
+rmdir "$MP"
+exit 0

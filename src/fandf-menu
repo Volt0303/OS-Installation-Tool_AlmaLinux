@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# F&F OSインストールツール（AlmaLinux版）メインメニュー
+set -uo pipefail
+. /usr/local/bin/fandf-common
+
+while true; do
+  clear 2>/dev/null || true
+  cat <<'MENU'
+============================================================
+   OS インストールツール      (C) FANDF CO.,LTD
+   AlmaLinux 9.8 / Clonezilla ベース
+============================================================
+
+   1 : マスターイメージ 抽出（キャプチャ）
+   2 : ターゲットへの 復元
+   3 : ディスク／イメージ 確認
+   4 : イメージ 削除
+   5 : コマンド操作（保守用）
+   9 : 終了（シャットダウン）
+
+MENU
+  read -rp "番号を入力してください: " SEL
+  case "$SEL" in
+    1) /usr/local/bin/fandf-capture ;;
+    2) /usr/local/bin/fandf-restore ;;
+    3) clear; echo "===== ディスク一覧 ====="; lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL
+       echo; echo "===== 保存イメージ ====="; mount_imgdir >/dev/null 2>&1 \
+         && (list_images | sed 's/^/  - /' || echo "  (なし)")
+       pause ;;
+    4) clear; echo "===== イメージ削除 ====="; mount_imgdir >/dev/null 2>&1 || { pause; continue; }
+       IMG="$(select_image)" || { pause; continue; }
+       read -rp "「$IMG」を削除します。よろしいですか？ (y/N): " YN
+       if [ "${YN,,}" = "y" ]; then
+         rm -rf "${IMGDIR:?}/$IMG" "${IMGDIR}/${IMG}.sha256" && c_ok "削除完了"
+       else c_warn "中止しました"; fi
+       pause ;;
+    5) clear; c_warn "保守用モードです。誤操作にご注意ください。exit でメニューに戻ります。"
+       bash ;;
+    9) clear; echo "終了します..."; sleep 1; poweroff ;;
+    *) ;;
+  esac
+done

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ターゲットへの復元（ocs-sr restoredisk ＋ 容量自動拡張）
+set -uo pipefail
+. /usr/local/bin/fandf-common
+log_init "restore"
+
+echo; line; echo "  === ターゲットへの復元 ==="; line; echo
+mount_imgdir || { pause; exit 1; }
+
+IMG="$(select_image)" || { c_warn "中止しました"; pause; exit 0; }
+echo
+DEV="$(select_disk)"  || { c_warn "中止しました"; pause; exit 0; }
+echo
+
+# --- 確認（破壊的操作）--------------------------------------------------
+INFO="$(lsblk -dno SIZE,MODEL,SERIAL "$DEV" 2>/dev/null)"
+line
+c_warn "  ※ 下記ディスクの内容はすべて消去されます"
+echo "     復元イメージ : $IMG"
+echo "     対象ディスク : $DEV  ( $INFO )"
+line
+read -rp "本当に復元しますか？ (y/N): " YN
+[ "${YN,,}" = "y" ] || { c_warn "中止しました"; pause; exit 0; }
+
+log "restore start image=$IMG dev=$DEV"; logj "restore_start" "$IMG -> $DEV"
+echo; echo "復元中...（時間がかかります）"; echo
+
+ocs-sr -g auto -e1 auto -e2 -r -j2 -scr -p true restoredisk "$IMG" "${DEV#/dev/}"
+RC=$?
+
+if [ $RC -ne 0 ]; then
+  echo; c_err "  復元に失敗しました（コード: $RC）"
+  echo "  対象ディスクは不完全な状態です。最初からやり直してください。"
+  log "restore failed rc=$RC"; logj "restore_fail" "rc=$RC"
+  pause; exit 1
+fi
+c_ok "  復元完了"; log "restore ok"; logj "restore_ok" "$IMG -> $DEV"
+
+# --- 容量拡張（ターゲットが大きい場合のみ実行）--------------------------
+echo; echo "=== 容量拡張の確認 ==="
+partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle >/dev/null 2>&1 || sleep 2
+LOGFILE="$LOGFILE" /usr/local/bin/fandf-expand "$DEV"
+EXRC=$?
+echo
+if [ $EXRC -eq 0 ]; then
+  c_ok "===== すべて完了しました ====="
+else
+  c_warn "===== 復元は成功、容量拡張のみ未完了です ====="
+  echo "  OSは起動できますが、ディスクの空き領域は未使用のままです。"
+fi
+pause

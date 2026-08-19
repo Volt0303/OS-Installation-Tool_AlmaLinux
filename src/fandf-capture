@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# マスターイメージのキャプチャ（Clonezilla ocs-sr savedisk のラッパー）
+set -uo pipefail
+. /usr/local/bin/fandf-common
+log_init "capture"
+
+echo; line; echo "  === マスターイメージ抽出 ==="; line; echo
+mount_imgdir || { pause; exit 1; }
+
+# 既存イメージの表示
+echo "現在保存されているイメージ:"
+list_images | sed 's/^/  - /' || true
+echo
+
+# 保存名の入力
+read -rp "保存するイメージ名を入力（中止は空Enter）: " NAME
+[ -n "$NAME" ] || { c_warn "中止しました"; pause; exit 0; }
+NAME="${NAME// /_}"
+[ -e "$IMGDIR/$NAME" ] && { c_err "同名のイメージが既に存在します"; pause; exit 1; }
+
+# 対象ディスク選択
+DEV="$(select_disk)" || { c_warn "中止しました"; pause; exit 0; }
+echo
+
+# 空き容量の確認
+FREE_G=$(df -BG --output=avail "$IMGDIR" | tail -1 | tr -dc '0-9')
+echo "  対象ディスク : $DEV"
+echo "  保存先の空き : ${FREE_G} GB"
+[ "${FREE_G:-0}" -ge 12 ] || { c_err "保存先の空き容量が不足しています（12GB以上必要）"; \
+    echo "  「4: イメージの削除」で整理してから再実行してください"; pause; exit 1; }
+echo
+
+read -rp "キャプチャを実行しますか？ (y/N): " YN
+[ "${YN,,}" = "y" ] || { c_warn "中止しました"; pause; exit 0; }
+
+# --- 実行：一時名で作成し、成功後に正式名へリネーム ---------------------
+TMP="${NAME}.tmp"
+log "capture start dev=$DEV image=$NAME"; logj "capture_start" "$DEV -> $NAME"
+echo; echo "キャプチャ中...（時間がかかります）"; echo
+
+ocs-sr -q2 -j2 -z1p -i 0 -sfsck -senc -scs -p true savedisk "$TMP" "${DEV#/dev/}"
+RC=$?
+
+if [ $RC -eq 0 ] && [ -d "$IMGDIR/$TMP" ]; then
+  ( cd "$IMGDIR/$TMP" && sha256sum ./* > ../"${NAME}.sha256" 2>/dev/null ) || true
+  mv "$IMGDIR/$TMP" "$IMGDIR/$NAME"
+  echo; c_ok "  キャプチャ完了：$NAME"
+  log "capture ok"; logj "capture_ok" "$NAME"
+else
+  echo; c_err "  キャプチャに失敗しました（コード: $RC）"
+  rm -rf "$IMGDIR/$TMP"          # 不完全なイメージは残さない
+  log "capture failed rc=$RC"; logj "capture_fail" "rc=$RC"
+fi
+pause
