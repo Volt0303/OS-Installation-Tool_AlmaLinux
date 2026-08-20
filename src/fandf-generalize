@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# 一般化処理：復元先を「別個体」として起動できる状態にする
+#   ・SSHホスト鍵の削除        → 初回起動時に sshd-keygen が再生成
+#   ・machine-id の空化        → 初回起動時に systemd が再生成
+#   ・ネットワーク固有情報の削除（NetworkManager接続 / MAC依存設定）
+#
+#   使い方: fandf-generalize /dev/sda
+#
+set -uo pipefail
+. /usr/local/bin/fandf-common
+
+DISK="${1:-}"
+VG="${VG:-almalinux}"
+LV="${LV:-root}"
+[ -b "$DISK" ] || { c_err "使い方: fandf-generalize /dev/sdX"; exit 1; }
+
+log "一般化開始 disk=$DISK vg=$VG lv=$LV"
+vgchange -ay "$VG" >/dev/null 2>&1 || true
+ROOTLV="/dev/${VG}/${LV}"
+[ -b "$ROOTLV" ] || { c_err "$ROOTLV が見つかりません"; logj "generalize_fail" "no-lv"; exit 1; }
+
+MP="$(mktemp -d)"
+mount "$ROOTLV" "$MP" 2>/dev/null || { c_err "$ROOTLV をマウントできません"; logj "generalize_fail" "mount"; rmdir "$MP"; exit 1; }
+
+# 復元先のルートであることを一応確認（誤ったFSを触らないため）
+if [ ! -d "$MP/etc" ] || [ ! -d "$MP/var" ]; then
+  c_err "対象がLinuxのルートではないようです。中止しました"
+  umount "$MP"; rmdir "$MP"; exit 1
+fi
+
+n=0
+del() { # 削除して件数を数える
+  local d="$1"
+  for f in $d; do
+    [ -e "$f" ] || continue
+    rm -rf "$f" && n=$((n+1))
+  done
+}
+
+echo "  - SSHホスト鍵を削除（初回起動時に再生成されます）"
+del "$MP/etc/ssh/ssh_host_*"
+
+echo "  - machine-id を初期化"
+: > "$MP/etc/machine-id" 2>/dev/null || true
+if [ -e "$MP/var/lib/dbus/machine-id" ] && [ ! -L "$MP/var/lib/dbus/machine-id" ]; then
+  rm -f "$MP/var/lib/dbus/machine-id"
+fi
+
+echo "  - ネットワーク固有情報を削除"
+del "$MP/etc/NetworkManager/system-connections/*"
+del "$MP/etc/udev/rules.d/70-persistent-net.rules"
+del "$MP/etc/udev/rules.d/80-net-name-slot.rules"
+
+sync
+umount "$MP" && rmdir "$MP"
+
+c_ok "一般化完了（削除 ${n} 件）"
+echo "     ※ SSHホスト鍵・machine-id は復元先の初回起動時に自動生成されます"
+log "一般化完了 removed=$n"; logj "generalize_ok" "removed=$n"
+exit 0

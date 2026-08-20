@@ -41,11 +41,18 @@ echo; echo "=== 容量拡張の確認 ==="
 partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle >/dev/null 2>&1 || sleep 2
 LOGFILE="$LOGFILE" /usr/local/bin/fandf-expand "$DEV"
 EXRC=$?
+
+# --- 一般化（SSH鍵・machine-id・ネットワーク固有情報の削除）--------------
+echo; echo "=== 一般化処理 ==="
+LOGFILE="$LOGFILE" /usr/local/bin/fandf-generalize "$DEV"
+GERC=$?
+
 echo
-if [ $EXRC -eq 0 ]; then
+if [ $EXRC -eq 0 ] && [ $GERC -eq 0 ]; then
   c_ok "===== すべて完了しました ====="
 else
-  c_warn "===== 復元は成功、容量拡張のみ未完了です ====="
-  echo "  OSは起動できますが、ディスクの空き領域は未使用のままです。"
+  c_warn "===== 復元は成功しましたが、後処理に問題があります ====="
+  [ $EXRC -ne 0 ] && echo "  ・容量拡張が未完了です（OSは起動できますが空き領域は未使用のまま）"
+  [ $GERC -ne 0 ] && echo "  ・一般化が未完了です（SSH鍵・machine-idがマスターと同一の可能性）"
 fi
 pause
