@@ -12,14 +12,21 @@ c_err()  { printf '\033[1;31m%s\033[0m\n' "$*"; }
 line()   { printf '%s\n' "------------------------------------------------------------"; }
 
 # --- ログ ---------------------------------------------------------------
+# ※ log_init は必ず mount_imgdir の後に呼ぶこと
+#   （先に呼ぶと、マウント前のディレクトリにログを作ってしまい隠れてしまう）
 log_init() {
-  mkdir -p "$LOGDIR" 2>/dev/null || true
   LOGFILE="$LOGDIR/$(date +%Y%m%d-%H%M%S)-$1.log"
+  mkdir -p "$LOGDIR" 2>/dev/null || true
   log "=== $1 開始 ==="
 }
-log()  { [ -n "$LOGFILE" ] && printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOGFILE" 2>/dev/null || true; }
+log()  {
+  [ -n "$LOGFILE" ] || return 0
+  mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOGFILE" 2>/dev/null || true
+}
 logj() { # 機械可読ログ（1イベント1行）
   [ -n "$LOGFILE" ] || return 0
+  mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
   printf '{"time":"%s","event":"%s","detail":"%s"}\n' "$(date -Is)" "$1" "${2:-}" \
     >>"${LOGFILE%.log}.jsonl" 2>/dev/null || true
 }

@@ -2,10 +2,10 @@
 # ターゲットへの復元（ocs-sr restoredisk ＋ 容量自動拡張）
 set -uo pipefail
 . /usr/local/bin/fandf-common
-log_init "restore"
 
 echo; line; echo "  === ターゲットへの復元 ==="; line; echo
 mount_imgdir || { pause; exit 1; }
+log_init "restore"        # 保存領域をマウントしてからログを開始する
 
 IMG="$(select_image)" || { c_warn "中止しました"; pause; exit 0; }
 echo
