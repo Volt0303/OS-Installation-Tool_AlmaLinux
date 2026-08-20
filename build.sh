@@ -16,6 +16,7 @@ OUT="$ROOT/build/fandf-osinstall.iso"
 # 組み込み先（squashfs内のパス）と、起動時に実行するスクリプト
 INSTALL_DIR="/usr/local/bin"
 ENTRY="$INSTALL_DIR/fandf-menu"
+OCS_LANG="${OCS_LANG:-ja_JP.UTF-8}"   # 起動時ロケール（英語にする場合は en_US.UTF-8）
 
 msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mエラー:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -69,14 +70,20 @@ mapfile -t CFGS < <(find "$WORK/iso" -type f \( -name '*.cfg' -o -name '*.conf' 
 PATCHED=0
 for f in "${CFGS[@]:-}"; do
   grep -q 'ocs_live_run=' "$f" 2>/dev/null || continue
-  sudo sed -i \
+  # ocs_live_run: 自作メニューを指定
+  # locales / keyboard-layouts: 空だと起動時に言語・キーボードの選択画面が出るため固定
+  sudo sed -i -E \
     -e "s|ocs_live_run=\"[^\"]*\"|ocs_live_run=\"$ENTRY\"|g" \
-    -e 's|ocs_lang="[^"]*"|ocs_lang="ja_JP.UTF-8"|g' \
+    -e "s|ocs_lang=\"[^\"]*\"|ocs_lang=\"$OCS_LANG\"|g" \
+    -e "s|(^|[[:space:]])locales=[^[:space:]\"]*|\\1locales=$OCS_LANG|g" \
+    -e "s|(^|[[:space:]])keyboard-layouts=[^[:space:]\"]*|\\1keyboard-layouts=NONE|g" \
+    -e "s|(^|[[:space:]])ocs_live_keymap=\"[^\"]*\"|\\1ocs_live_keymap=\"NONE\"|g" \
     "$f"
   PATCHED=$((PATCHED+1))
 done
 [ "$PATCHED" -gt 0 ] || die "ocs_live_run を含む起動設定が見つかりません（ISOの構成を確認してください）"
 echo "    書き換えた設定ファイル: $PATCHED 件"
+echo "    確認 → $(grep -ohm1 'ocs_live_run="[^"]*"' "${CFGS[@]}" | head -1) / $(grep -ohm1 'locales=[^ "]*' "${CFGS[@]}" | head -1)"
 
 # ---------------------------------------------------------------- 6. ISO再構築
 msg "6/6 ISO を再構築（元の起動レコードを引き継ぎ）"
