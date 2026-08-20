@@ -11,6 +11,7 @@ while true; do
    AlmaLinux 9.8 / Clonezilla ベース
 ============================================================
 
+   0 : 保存領域の初期化（USB作成時のみ）
    1 : マスターイメージ 抽出（キャプチャ）
    2 : ターゲットへの 復元
    3 : ディスク／イメージ 確認
@@ -21,6 +22,7 @@ while true; do
 MENU
   read -rp "番号を入力してください: " SEL
   case "$SEL" in
+    0) clear; /usr/local/bin/fandf-initimg; pause ;;
     1) /usr/local/bin/fandf-capture ;;
     2) /usr/local/bin/fandf-restore ;;
     3) clear; echo "===== ディスク一覧 ====="; lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL
