@@ -13,10 +13,14 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 WORK="$ROOT/build/work"
 OUT="$ROOT/build/fandf-osinstall.iso"
 
-# 組み込み先（squashfs内のパス）と、起動時に実行するスクリプト
 INSTALL_DIR="/usr/local/bin"
 ENTRY="$INSTALL_DIR/fandf-menu"
 OCS_LANG="${OCS_LANG:-ja_JP.UTF-8}"   # 起動時ロケール（英語にする場合は en_US.UTF-8）
+COMP="${COMP:-zstd}"                  # squashfs圧縮（zstd=高速 / xz=高圧縮）
+
+# --clean を付けるとキャッシュを破棄して最初からやり直す
+CLEAN=0
+[ "${1:-}" = "--clean" ] && { CLEAN=1; shift; }
 
 msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mエラー:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -25,53 +29,62 @@ die() { printf '\033[1;31mエラー:\033[0m %s\n' "$*" >&2; exit 1; }
 SRC="${1:-}"
 [ -n "$SRC" ] || SRC="$(ls -1 "$ROOT"/build/clonezilla-live-*.iso 2>/dev/null | head -1 || true)"
 [ -n "$SRC" ] && [ -f "$SRC" ] || die "Clonezilla Live の ISO が build/ にありません（引数でパス指定も可）"
-
 for c in xorriso unsquashfs mksquashfs; do
   command -v "$c" >/dev/null 2>&1 || die "$c が見つかりません（xorriso / squashfs-tools を導入してください）"
 done
-[ -d "$ROOT/src" ] || die "src/ がありません"
-
+[ -f "$ROOT/src/fandf-menu" ] || die "src/fandf-menu がありません"
 msg "元ISO: $SRC"
 
-# ---------------------------------------------------------------- 1. 展開
-msg "1/6 ISO から squashfs と起動設定を取り出し"
-sudo rm -rf "$WORK"; mkdir -p "$WORK"
-xorriso -osirrox on -indev "$SRC" \
-        -extract /live/filesystem.squashfs "$WORK/filesystem.squashfs" >/dev/null 2>&1 \
-  || die "filesystem.squashfs を取り出せません（Clonezilla Live の ISO か確認してください）"
-
-# 起動設定（BIOS: /syslinux, UEFI: /EFI, /boot/grub）を取り出す
-for d in /syslinux /EFI /boot; do
-  xorriso -osirrox on -indev "$SRC" -extract "$d" "$WORK/iso$d" >/dev/null 2>&1 || true
-done
+# ---------------------------------------------------------------- 1. 全展開
+[ "$CLEAN" = 1 ] && { echo "  （--clean: キャッシュを破棄）"; sudo rm -rf "$WORK"; }
+mkdir -p "$WORK"
+if [ -f "$WORK/iso/live/filesystem.squashfs" ] && [ -d "$WORK/rootfs" ]; then
+  msg "1/7 展開はキャッシュを使用（やり直すには ./build.sh --clean）"
+else
+  msg "1/7 ISO を丸ごと展開（初回のみ・数分かかります）"
+  sudo rm -rf "$WORK"; mkdir -p "$WORK"
+  xorriso -osirrox on -indev "$SRC" -extract / "$WORK/iso" >/dev/null 2>&1 \
+    || die "ISO の展開に失敗しました"
+  sudo chmod -R u+w "$WORK/iso"         # 展開直後は読み取り専用のため書き込み可に
+  [ -f "$WORK/iso/live/filesystem.squashfs" ] || die "/live/filesystem.squashfs がありません"
+fi
 
 # ---------------------------------------------------------------- 2. 解凍
-msg "2/6 squashfs を解凍（rootfs）"
-sudo rm -rf "$WORK/rootfs"
-sudo unsquashfs -q -d "$WORK/rootfs" "$WORK/filesystem.squashfs" >/dev/null
+if [ -d "$WORK/rootfs/usr" ]; then
+  msg "2/7 squashfs の解凍はキャッシュを使用"
+else
+  msg "2/7 squashfs を解凍（初回のみ）"
+  sudo unsquashfs -q -d "$WORK/rootfs" "$WORK/iso/live/filesystem.squashfs" >/dev/null
+fi
 
 # ---------------------------------------------------------------- 3. 注入
-msg "3/6 自作スクリプトを注入 → $INSTALL_DIR"
+msg "3/7 自作スクリプトを注入 → $INSTALL_DIR"
+sudo rm -rf "$WORK/rootfs$INSTALL_DIR/fandf-"*      # 前回分を除去
 sudo mkdir -p "$WORK/rootfs$INSTALL_DIR"
 sudo cp -a "$ROOT/src/." "$WORK/rootfs$INSTALL_DIR/"
 sudo chown -R 0:0 "$WORK/rootfs$INSTALL_DIR"
 sudo chmod -R 0755 "$WORK/rootfs$INSTALL_DIR"
-[ -f "$WORK/rootfs$ENTRY" ] || die "起動対象 $ENTRY が src/ にありません（src/fandf-menu を用意してください）"
 
 # ---------------------------------------------------------------- 4. 再圧縮
-msg "4/6 squashfs を再圧縮"
-sudo rm -f "$WORK/filesystem.new.squashfs"
-sudo mksquashfs "$WORK/rootfs" "$WORK/filesystem.new.squashfs" \
-     -comp xz -b 1M -noappend -no-progress >/dev/null
+msg "4/7 squashfs を再圧縮（$COMP）"
+sudo rm -f "$WORK/iso/live/filesystem.squashfs"
+sudo mksquashfs "$WORK/rootfs" "$WORK/iso/live/filesystem.squashfs" \
+     -comp "$COMP" -b 1M -noappend -no-progress >/dev/null \
+  || die "mksquashfs に失敗（COMP=xz ./build.sh で再試行できます）"
 
 # ---------------------------------------------------------------- 5. 起動設定
-msg "5/6 起動パラメータを書き換え（ocs_live_run → $ENTRY）"
-mapfile -t CFGS < <(find "$WORK/iso" -type f \( -name '*.cfg' -o -name '*.conf' \) 2>/dev/null || true)
+msg "5/7 起動パラメータを書き換え"
+# キャッシュ利用時に二重適用しないよう、設定ファイルだけ毎回originalへ戻す
+for d in /boot /EFI /syslinux /isolinux; do
+  [ -d "$WORK/iso$d" ] || continue
+  sudo rm -rf "$WORK/iso$d"
+  xorriso -osirrox on -indev "$SRC" -extract "$d" "$WORK/iso$d" >/dev/null 2>&1 || true
+  sudo chmod -R u+w "$WORK/iso$d" 2>/dev/null || true
+done
 PATCHED=0
-for f in "${CFGS[@]:-}"; do
+while IFS= read -r f; do
   grep -q 'ocs_live_run=' "$f" 2>/dev/null || continue
-  # ocs_live_run: 自作メニューを指定
-  # locales / keyboard-layouts: 空だと起動時に言語・キーボードの選択画面が出るため固定
+  # 既存の言語/キーマップ指定を除去し、ocs_live_run の置換と同時にまとめて付与する
   sudo sed -i -E \
     -e "s| ocs_lang=\"[^\"]*\"||g" \
     -e "s| ocs_live_keymap=\"[^\"]*\"||g" \
@@ -80,24 +93,36 @@ for f in "${CFGS[@]:-}"; do
     -e "s| locales=[^[:space:]\"]*| locales=$OCS_LANG|g" \
     -e "s| keyboard-layouts=[^[:space:]\"]*| keyboard-layouts=NONE|g" \
     "$f"
+  echo "    修正: ${f#"$WORK/iso"}"
   PATCHED=$((PATCHED+1))
-done
-[ "$PATCHED" -gt 0 ] || die "ocs_live_run を含む起動設定が見つかりません（ISOの構成を確認してください）"
-echo "    書き換えた設定ファイル: $PATCHED 件"
-echo "    確認 → $(grep -ohm1 'ocs_live_run="[^"]*" ocs_lang="[^"]*"' "${CFGS[@]}" | head -1)"
+done < <(find "$WORK/iso" -type f \( -name '*.cfg' -o -name '*.conf' \))
+[ "$PATCHED" -gt 0 ] || die "ocs_live_run を含む起動設定が見つかりません"
 
 # ---------------------------------------------------------------- 6. ISO再構築
-msg "6/6 ISO を再構築（元の起動レコードを引き継ぎ）"
+msg "6/7 ISO を再構築（元の起動レコードを引き継ぎ、全ファイルを反映）"
 rm -f "$OUT"
-XARGS=( -indev "$SRC" -outdev "$OUT" -boot_image any replay
-        -rm_r /live/filesystem.squashfs --
-        -map "$WORK/filesystem.new.squashfs" /live/filesystem.squashfs )
-for f in "${CFGS[@]:-}"; do
-  grep -q "ocs_live_run=\"$ENTRY\"" "$f" 2>/dev/null || continue
-  rel="/${f#"$WORK/iso/"}"
-  XARGS+=( -rm_r "$rel" -- -map "$f" "$rel" )
+xorriso -indev "$SRC" -outdev "$OUT" \
+        -boot_image any replay \
+        -update_r "$WORK/iso" / \
+        -commit >/dev/null 2>&1 || die "ISO の再構築に失敗しました"
+
+# ---------------------------------------------------------------- 7. 検証
+msg "7/7 出力ISOを読み直して検証"
+VER="$WORK/verify"; rm -rf "$VER"; mkdir -p "$VER"
+for d in /boot /EFI /syslinux /isolinux; do
+  xorriso -osirrox on -indev "$OUT" -extract "$d" "$VER$d" >/dev/null 2>&1 || true
 done
-xorriso "${XARGS[@]}" -commit >/dev/null 2>&1 || die "ISO の再構築に失敗しました"
+if grep -rqs "ocs_live_run=\"$ENTRY\"" "$VER"; then
+  echo "    ✅ 自作メニューが設定されています"
+  grep -rhos 'ocs_live_run="[^"]*" ocs_lang="[^"]*" ocs_live_keymap="[^"]*"' "$VER" | sort -u | sed 's/^/       /'
+else
+  echo "    ❌ 出力ISOに反映されていません（元の設定のままです）"
+  grep -rhos 'ocs_live_run="[^"]*"' "$VER" | sort -u | sed 's/^/       /'
+  die "検証に失敗しました"
+fi
+if grep -rqs ' locales=[^ ]' "$VER"; then
+  echo "    ✅ locales / keyboard-layouts も設定済み"
+fi
 
 msg "完成: $OUT  ($(du -h "$OUT" | cut -f1))"
 echo
