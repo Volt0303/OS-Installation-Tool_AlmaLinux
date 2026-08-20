@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# イメージ保存領域の初期化（GPT + ext4 + ラベル付与）
+#   使い方: fandf-initimg /dev/sdX
+#
+# ※ 指定ディスクの内容はすべて消去されます
+#
+set -uo pipefail
+. /usr/local/bin/fandf-common
+
+DISK="${1:-}"
+[ -b "$DISK" ] || { c_err "使い方: fandf-initimg /dev/sdX"; exit 1; }
+
+LD="$(live_disk || true)"
+[ -n "$LD" ] && [ "$DISK" = "/dev/$LD" ] && { c_err "起動メディアは初期化できません"; exit 1; }
+
+echo; c_warn "  ※ $DISK の内容はすべて消去されます"
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL "$DISK"
+echo
+read -rp "初期化しますか？ (y/N): " YN
+[ "${YN,,}" = "y" ] || { c_warn "中止しました"; exit 0; }
+
+echo "  - パーティションを作成"
+wipefs -a "$DISK" >/dev/null 2>&1 || true
+parted -s "$DISK" mklabel gpt mkpart primary ext4 1MiB 100% || { c_err "パーティション作成に失敗"; exit 1; }
+partprobe "$DISK" >/dev/null 2>&1 || true; udevadm settle 2>/dev/null || sleep 2
+
+PART="$(lsblk -lno NAME,TYPE "$DISK" | awk '$2=="part"{print "/dev/"$1}' | head -1)"
+[ -b "$PART" ] || { c_err "パーティションが認識できません"; exit 1; }
+
+echo "  - ext4 で初期化（ラベル: $IMGLABEL）"
+mkfs.ext4 -q -F -L "$IMGLABEL" "$PART" || { c_err "フォーマットに失敗"; exit 1; }
+
+c_ok "初期化完了: $PART (ラベル $IMGLABEL)"
+echo "  メニューに戻り、キャプチャを実行できます。"

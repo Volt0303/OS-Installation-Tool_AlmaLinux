@@ -28,10 +28,12 @@ ARGS=( -machine q35,accel=kvm -cpu host -m "$MEM" -smp "$CPUS" )
 case "$MODE" in
   iso)   SRC="$ROOT/build/fandf-osinstall.iso"
          [ -f "$SRC" ] || { echo "エラー: $SRC がありません → ./build.sh を実行"; exit 1; }
-         ARGS+=( -cdrom "$SRC" -boot order=d ) ;;
+         ARGS+=( -drive file="$SRC",if=none,id=cd0,media=cdrom
+                 -device ide-cd,drive=cd0,bus=ide.0 -boot order=d ) ;;
   alma)  SRC="$(ls -1 "$ROOT"/build/AlmaLinux-9*.iso 2>/dev/null | head -1 || true)"
          [ -n "$SRC" ] || { echo "エラー: build/ に AlmaLinux-9*.iso を置いてください"; exit 1; }
-         ARGS+=( -cdrom "$SRC" -boot order=d ) ;;
+         ARGS+=( -drive file="$SRC",if=none,id=cd0,media=cdrom
+                 -device ide-cd,drive=cd0,bus=ide.0 -boot order=d ) ;;
   disk)  ARGS+=( -boot order=c ) ;;
   *)     echo "使い方: ./vm/run.sh {iso|alma|disk} [ディスク名...]"; exit 1 ;;
 esac
@@ -42,8 +44,9 @@ i=0
 for d in "$@"; do
   f="$D/$d.qcow2"
   [ -f "$f" ] || { echo "エラー: $f がありません → ./vm/mkvms.sh $d <サイズ>"; exit 1; }
+  # 実機(m-1)と同じ /dev/sdX になるよう SATA(AHCI) で接続し、シリアル番号も付与する
   ARGS+=( -drive file="$f",if=none,id=d$i,format=qcow2
-          -device virtio-blk-pci,drive=d$i,serial=TESTDISK$i )
+          -device ide-hd,drive=d$i,bus=ide.$((i+1)),serial="VMDISK$(printf '%04d' $((1000+i)))" )
   i=$((i+1))
 done
 

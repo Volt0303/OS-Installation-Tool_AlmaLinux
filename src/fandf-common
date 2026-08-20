@@ -2,6 +2,7 @@
 # 共通関数（他スクリプトから source して使用）
 
 IMGDIR="/home/partimag"          # イメージ保存領域（USBの第2区画）
+IMGLABEL="FANDF-IMG"             # イメージ保存領域のラベル
 LOGDIR="$IMGDIR/logs"
 LOGFILE="${LOGFILE:-}"
 
@@ -36,12 +37,24 @@ live_disk() {
 # --- イメージ保存領域のマウント（USB第2区画）---------------------------
 mount_imgdir() {
   mountpoint -q "$IMGDIR" && return 0
-  local ld part
-  ld="$(live_disk)" || { c_err "起動USBを特定できません"; return 1; }
-  part="$(lsblk -lno NAME,TYPE "/dev/$ld" | awk '$2=="part"{print $1}' | sed -n 2p)"
-  [ -n "$part" ] || { c_err "イメージ保存領域（第2区画）が見つかりません"; return 1; }
+  local dev="" ld part
+  # ① ラベルで探す（実機USB・検証VMのどちらでも同じ方法で見つかる）
+  dev="$(blkid -L "$IMGLABEL" 2>/dev/null || true)"
+  # ② 見つからなければ起動USBの第2区画を使う
+  if [ -z "$dev" ]; then
+    ld="$(live_disk || true)"
+    if [ -n "$ld" ]; then
+      part="$(lsblk -lno NAME,TYPE "/dev/$ld" | awk '$2=="part"{print $1}' | sed -n 2p)"
+      [ -n "$part" ] && dev="/dev/$part"
+    fi
+  fi
+  if [ -z "$dev" ]; then
+    c_err "イメージ保存領域が見つかりません（ラベル: $IMGLABEL）"
+    echo "  初期化する場合は「5: コマンド操作」から  fandf-initimg /dev/sdX  を実行してください"
+    return 1
+  fi
   mkdir -p "$IMGDIR"
-  mount "/dev/$part" "$IMGDIR" || { c_err "/dev/$part のマウントに失敗しました"; return 1; }
+  mount "$dev" "$IMGDIR" || { c_err "$dev のマウントに失敗しました"; return 1; }
 }
 
 # --- ディスク一覧（起動USBは自動除外）----------------------------------
