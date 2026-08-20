@@ -75,9 +75,9 @@ for f in "${CFGS[@]:-}"; do
   sudo sed -i -E \
     -e "s|ocs_live_run=\"[^\"]*\"|ocs_live_run=\"$ENTRY\"|g" \
     -e "s|ocs_lang=\"[^\"]*\"|ocs_lang=\"$OCS_LANG\"|g" \
-    -e "s|(^|[[:space:]])locales=[^[:space:]\"]*|\\1locales=$OCS_LANG|g" \
-    -e "s|(^|[[:space:]])keyboard-layouts=[^[:space:]\"]*|\\1keyboard-layouts=NONE|g" \
-    -e "s|(^|[[:space:]])ocs_live_keymap=\"[^\"]*\"|\\1ocs_live_keymap=\"NONE\"|g" \
+    -e "s| locales=[^[:space:]\"]*| locales=$OCS_LANG|g" \
+    -e "s| keyboard-layouts=[^[:space:]\"]*| keyboard-layouts=NONE|g" \
+    -e "s|ocs_live_keymap=\"[^\"]*\"|ocs_live_keymap=\"NONE\"|g" \
     "$f"
   PATCHED=$((PATCHED+1))
 done
