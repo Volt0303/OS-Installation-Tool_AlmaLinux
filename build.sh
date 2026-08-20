@@ -73,17 +73,18 @@ for f in "${CFGS[@]:-}"; do
   # ocs_live_run: 自作メニューを指定
   # locales / keyboard-layouts: 空だと起動時に言語・キーボードの選択画面が出るため固定
   sudo sed -i -E \
-    -e "s|ocs_live_run=\"[^\"]*\"|ocs_live_run=\"$ENTRY\"|g" \
-    -e "s|ocs_lang=\"[^\"]*\"|ocs_lang=\"$OCS_LANG\"|g" \
+    -e "s| ocs_lang=\"[^\"]*\"||g" \
+    -e "s| ocs_live_keymap=\"[^\"]*\"||g" \
+    -e "s| ocs_live_batch=\"[^\"]*\"||g" \
+    -e "s|ocs_live_run=\"[^\"]*\"|ocs_live_run=\"$ENTRY\" ocs_lang=\"$OCS_LANG\" ocs_live_keymap=\"NONE\" ocs_live_batch=\"yes\"|g" \
     -e "s| locales=[^[:space:]\"]*| locales=$OCS_LANG|g" \
     -e "s| keyboard-layouts=[^[:space:]\"]*| keyboard-layouts=NONE|g" \
-    -e "s|ocs_live_keymap=\"[^\"]*\"|ocs_live_keymap=\"NONE\"|g" \
     "$f"
   PATCHED=$((PATCHED+1))
 done
 [ "$PATCHED" -gt 0 ] || die "ocs_live_run を含む起動設定が見つかりません（ISOの構成を確認してください）"
 echo "    書き換えた設定ファイル: $PATCHED 件"
-echo "    確認 → $(grep -ohm1 'ocs_live_run="[^"]*"' "${CFGS[@]}" | head -1) / $(grep -ohm1 'locales=[^ "]*' "${CFGS[@]}" | head -1)"
+echo "    確認 → $(grep -ohm1 'ocs_live_run="[^"]*" ocs_lang="[^"]*"' "${CFGS[@]}" | head -1)"
 
 # ---------------------------------------------------------------- 6. ISO再構築
 msg "6/6 ISO を再構築（元の起動レコードを引き継ぎ）"
