@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# VMを起動する（UEFI / OVMF）
+# VMを起動する（UEFI / OVMF / SATA接続）
 #
 #   ./vm/run.sh iso                  自作ISOのみ起動（メニュー確認）
-#   ./vm/run.sh iso master usb       キャプチャ試験（master＋保存先USB）
-#   ./vm/run.sh iso target80 usb     復元試験（ターゲット＋USB）
+#   ./vm/run.sh iso master usb       キャプチャ試験（master＋保存先）
+#   ./vm/run.sh iso target80 usb     復元＋拡張試験
 #   ./vm/run.sh disk target80        復元後のディスクから起動（起動確認）
 #   ./vm/run.sh alma master          AlmaLinuxをインストール（マスター作成）
+#
+#   環境変数: MEM(既定4096) CPUS(4) VNC(1) KEEPVARS=1(UEFI変数を保持)
 #
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,50 +23,58 @@ OVMF_VARS=/usr/share/edk2/ovmf/OVMF_VARS.fd
 [ -f "$OVMF_CODE" ] || { echo "エラー: OVMF(UEFI)がありません → dnf install edk2-ovmf"; exit 1; }
 
 MODE="${1:-iso}"; shift || true
-MEM="${MEM:-4096}"; CPUS="${CPUS:-4}"; VNC="${VNC:-1}"     # VNC :1 = ポート5901
+MEM="${MEM:-4096}"; CPUS="${CPUS:-4}"; VNC="${VNC:-1}"; KEEPVARS="${KEEPVARS:-0}"
 
-# --- 起動元の決定 -------------------------------------------------------
 ARGS=( -machine q35,accel=kvm -cpu host -m "$MEM" -smp "$CPUS" )
+
+# --- 起動元（CD）------------------------------------------------------
+CD=""
 case "$MODE" in
-  iso)   SRC="$ROOT/build/fandf-osinstall.iso"
-         [ -f "$SRC" ] || { echo "エラー: $SRC がありません → ./build.sh を実行"; exit 1; }
-         ARGS+=( -drive file="$SRC",if=none,id=cd0,media=cdrom
-                 -device ide-cd,drive=cd0,bus=ide.0 -boot order=d ) ;;
-  alma)  SRC="$(ls -1 "$ROOT"/build/AlmaLinux-9*.iso 2>/dev/null | head -1 || true)"
-         [ -n "$SRC" ] || { echo "エラー: build/ に AlmaLinux-9*.iso を置いてください"; exit 1; }
-         ARGS+=( -drive file="$SRC",if=none,id=cd0,media=cdrom
-                 -device ide-cd,drive=cd0,bus=ide.0 -boot order=d ) ;;
-  disk)  ARGS+=( -boot order=c ) ;;
-  *)     echo "使い方: ./vm/run.sh {iso|alma|disk} [ディスク名...]"; exit 1 ;;
+  iso)  CD="$ROOT/build/fandf-osinstall.iso"
+        [ -f "$CD" ] || { echo "エラー: $CD がありません → ./build.sh を実行"; exit 1; } ;;
+  alma) CD="$(ls -1 "$ROOT"/build/AlmaLinux-9*.iso 2>/dev/null | head -1 || true)"
+        [ -n "$CD" ] || { echo "エラー: build/ に AlmaLinux-9*.iso を置いてください"; exit 1; } ;;
+  disk) ;;
+  *)    echo "使い方: ./vm/run.sh {iso|alma|disk} [ディスク名...]"; exit 1 ;;
 esac
 
-# --- ディスク接続 -------------------------------------------------------
-NAME="${1:-live}"
+# bootindex が小さいものから起動する。CD起動時はCDを最優先にする
+if [ -n "$CD" ]; then
+  ARGS+=( -drive file="$CD",if=none,id=cd0,media=cdrom,readonly=on
+          -device ide-cd,drive=cd0,bus=ide.0,bootindex=0 )
+  IDX=1
+else
+  IDX=0
+fi
+
+# --- ディスク接続（実機と同じ /dev/sdX になるよう SATA で接続）--------
 i=0
 for d in "$@"; do
   f="$D/$d.qcow2"
   [ -f "$f" ] || { echo "エラー: $f がありません → ./vm/mkvms.sh $d <サイズ>"; exit 1; }
-  # 実機(m-1)と同じ /dev/sdX になるよう SATA(AHCI) で接続し、シリアル番号も付与する
   ARGS+=( -drive file="$f",if=none,id=d$i,format=qcow2
-          -device ide-hd,drive=d$i,bus=ide.$((i+1)),serial="VMDISK$(printf '%04d' $((1000+i)))" )
+          -device ide-hd,drive=d$i,bus=ide.$((i+1)),serial="VMDISK$(printf '%04d' $((1000+i)))",bootindex=$((IDX+i)) )
   i=$((i+1))
 done
 
-# --- UEFI変数領域（VMごとに書き込み可能なコピーを持たせる）--------------
-VARS="$D/${NAME}_VARS.fd"
-[ -f "$VARS" ] || cp "$OVMF_VARS" "$VARS"
+# --- UEFI変数領域 -----------------------------------------------------
+# 既定では毎回まっさらな状態から起動する。
+#   → 前回インストール時の起動エントリが残っていてCDから起動できない事故を防ぐ
+#   → 復元後の「NVRAMに何も無い実機」と同じ条件になるため検証としても正しい
+NAME="${1:-live}"
+VARS="$D/${MODE}_${NAME}_VARS.fd"
+if [ "$KEEPVARS" != 1 ] || [ ! -f "$VARS" ]; then cp -f "$OVMF_VARS" "$VARS"; fi
 ARGS+=( -drive if=pflash,format=raw,unit=0,readonly=on,file="$OVMF_CODE"
         -drive if=pflash,format=raw,unit=1,file="$VARS" )
 
-# --- 画面（VNC）--------------------------------------------------------
 ARGS+=( -vnc ":$VNC" -k ja -usb -device usb-tablet )
 
 cat <<MSG
 
-  起動モード : $MODE
+  起動モード : $MODE $([ -n "$CD" ] && echo "(CD: $(basename "$CD"))")
   ディスク   : ${*:-（なし）}
+  UEFI変数   : $([ "$KEEPVARS" = 1 ] && echo "保持" || echo "毎回初期化（KEEPVARS=1 で保持）")
   画面       : VNC :$VNC  →  別ターミナルで  vncviewer localhost:$VNC
-                            （未導入なら  sudo dnf install -y tigervnc）
   終了       : このターミナルで Ctrl+C
 
 MSG
