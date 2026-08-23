@@ -89,17 +89,33 @@ umount "$DEV"?* 2>/dev/null || true
 dd if="$ISO" of="$DEV" bs=4M status=progress conv=fsync || die "書き込みに失敗しました"
 sync; partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle 2>/dev/null || sleep 2
 
-# --- ② GPTバックアップヘッダを末尾へ ------------------------------------
-# ISOはUSBより小さいため、バックアップGPTがディスク中間に残る。これを末尾へ移す。
-echo "② GPTバックアップヘッダを末尾へ移動"
-sgdisk -e "$DEV" >/dev/null 2>&1 || c_warn "   sgdisk -e で警告（続行します）"
-partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle 2>/dev/null || sleep 2
+# --- ② パーティションテーブルの種別を判定 -------------------------------
+# isohybrid の ISO を dd すると MBR(dos) になる場合と GPT になる場合がある
+PTTYPE="$(blkid -o value -s PTTYPE "$DEV" 2>/dev/null || true)"
+[ -n "$PTTYPE" ] || PTTYPE=dos
+echo "② パーティションテーブル: $PTTYPE"
+if [ "$PTTYPE" = "gpt" ]; then
+  # GPTの場合のみ、バックアップヘッダをディスク末尾へ移す必要がある
+  echo "   GPTバックアップヘッダを末尾へ移動"
+  sgdisk -e "$DEV" >/dev/null 2>&1 || c_warn "   sgdisk -e で警告（続行します）"
+  partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle 2>/dev/null || sleep 2
+fi
 
 # --- ③ イメージ保存領域の作成 -------------------------------------------
 echo "③ イメージ保存領域を作成（ext4 / ラベル $IMGLABEL）"
 BEFORE="$(lsblk -lno NAME,TYPE "$DEV" | awk '$2=="part"{print $1}')"
-sgdisk -n 0:0:0 -t 0:8300 -c 0:"$IMGLABEL" "$DEV" >/dev/null 2>&1 \
-  || die "パーティションの作成に失敗しました"
+if [ "$PTTYPE" = "gpt" ]; then
+  sgdisk -n 0:0:0 -t 0:8300 -c 0:"$IMGLABEL" "$DEV" >/dev/null 2>&1 \
+    || die "パーティションの作成に失敗しました（GPT）"
+else
+  # MBR: 既存パーティションの直後から末尾まで確保する
+  LASTEND="$(partx -gro END "$DEV" 2>/dev/null | sort -n | tail -1)"
+  [ -n "$LASTEND" ] || die "既存パーティションの位置を取得できません"
+  STARTMIB=$(( (LASTEND + 1) * 512 / 1048576 + 1 ))
+  echo "   開始位置: ${STARTMIB}MiB 〜 末尾"
+  parted -s -a optimal "$DEV" mkpart primary ext4 "${STARTMIB}MiB" 100% \
+    || die "パーティションの作成に失敗しました（MBR）"
+fi
 partprobe "$DEV" >/dev/null 2>&1 || true; udevadm settle 2>/dev/null || sleep 3
 
 AFTER="$(lsblk -lno NAME,TYPE "$DEV" | awk '$2=="part"{print $1}')"

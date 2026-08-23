@@ -48,11 +48,19 @@ else
 fi
 
 # --- ディスク接続（実機と同じ /dev/sdX になるよう SATA で接続）--------
+# ディスク名は vm/disks/<名前>.qcow2 のほか、/dev/sdX を直接指定できる
+#   例) sudo ./vm/run.sh disk /dev/sdb  … 作成したUSBをVMで起動テストする
 i=0
 for d in "$@"; do
-  f="$D/$d.qcow2"
-  [ -f "$f" ] || { echo "エラー: $f がありません → ./vm/mkvms.sh $d <サイズ>"; exit 1; }
-  ARGS+=( -drive file="$f",if=none,id=d$i,format=qcow2
+  if [ "${d#/dev/}" != "$d" ]; then
+    f="$d"; FMT=raw
+    [ -b "$f" ] || { echo "エラー: $f はブロックデバイスではありません"; exit 1; }
+    [ -r "$f" ] || { echo "エラー: $f を読めません（sudo で実行してください）"; exit 1; }
+  else
+    f="$D/$d.qcow2"; FMT=qcow2
+    [ -f "$f" ] || { echo "エラー: $f がありません → ./vm/mkvms.sh $d <サイズ>"; exit 1; }
+  fi
+  ARGS+=( -drive file="$f",if=none,id=d$i,format=$FMT
           -device ide-hd,drive=d$i,bus=ide.$((i+1)),serial="VMDISK$(printf '%04d' $((1000+i)))",bootindex=$((IDX+i)) )
   i=$((i+1))
 done
@@ -61,7 +69,7 @@ done
 # 既定では毎回まっさらな状態から起動する。
 #   → 前回インストール時の起動エントリが残っていてCDから起動できない事故を防ぐ
 #   → 復元後の「NVRAMに何も無い実機」と同じ条件になるため検証としても正しい
-NAME="${1:-live}"
+NAME="$(basename "${1:-live}")"
 VARS="$D/${MODE}_${NAME}_VARS.fd"
 if [ "$KEEPVARS" != 1 ] || [ ! -f "$VARS" ]; then cp -f "$OVMF_VARS" "$VARS"; fi
 ARGS+=( -drive if=pflash,format=raw,unit=0,readonly=on,file="$OVMF_CODE"
