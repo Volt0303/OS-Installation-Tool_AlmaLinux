@@ -65,18 +65,25 @@ mount_imgdir() {
 }
 
 # --- ディスク一覧（起動USBは自動除外）----------------------------------
+# ディスク一覧（起動USBは除外）
+#   モデル名に空白が含まれる例（"SED2QII-LP 240GB" 等）でも項目がずれないよう、
+#   lsblk の KEY="VALUE" 形式（-P）を使って確実に取得する
 list_disks() {
-  local ld; ld="$(live_disk || true)"
-  lsblk -dno NAME,SIZE,MODEL,SERIAL,TYPE 2>/dev/null | awk '$NF=="disk"' | while read -r n s m sn _; do
-    [ "$n" = "$ld" ] && continue                       # 起動USBは対象外
-    printf '%s\t%s\t%s\t%s\n' "$n" "$s" "${m:-不明}" "${sn:-不明}"
-  done
+  local ld line NAME SIZE MODEL SERIAL TYPE
+  ld="$(live_disk || true)"
+  while IFS= read -r line; do
+    NAME=""; SIZE=""; MODEL=""; SERIAL=""; TYPE=""
+    eval "$line"
+    [ "$TYPE" = "disk" ] || continue
+    [ -n "$ld" ] && [ "$NAME" = "$ld" ] && continue    # 起動USBは対象外
+    printf '%s\t%s\t%s\t%s\n' "$NAME" "$SIZE" "${MODEL:-不明}" "${SERIAL:-不明}"
+  done < <(lsblk -dnP -o NAME,SIZE,MODEL,SERIAL,TYPE 2>/dev/null)
 }
 
 select_disk() { # 対象ディスクを番号で選ばせ、/dev/xxx を返す
   local -a names=() rows=()
   while IFS=$'\t' read -r n s m sn; do
-    names+=("$n"); rows+=("$(printf '%-8s %-8s %-22s SN:%s' "$n" "$s" "$m" "$sn")")
+    names+=("$n"); rows+=("$(printf '%-8s %-8s %-26s SN:%s' "$n" "$s" "$m" "$sn")")
   done < <(list_disks)
   [ ${#names[@]} -gt 0 ] || { c_err "対象ディスクが検出されません。接続を確認してください"; return 1; }
   echo "===== 対象ディスク一覧（起動USBは自動的に除外されています）=====" >&2
