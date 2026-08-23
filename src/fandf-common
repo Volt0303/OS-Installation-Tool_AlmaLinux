@@ -87,7 +87,19 @@ select_disk() { # 対象ディスクを番号で選ばせ、/dev/xxx を返す
 }
 
 # --- イメージ一覧 -------------------------------------------------------
-list_images() { find "$IMGDIR" -maxdepth 1 -mindepth 1 -type d ! -name logs -printf '%f\n' 2>/dev/null | sort; }
+# Clonezillaのイメージだけを列挙する
+#   （lost+found・logs・作成途中の .tmp などを確実に除外するため、
+#     Clonezillaが必ず作る disk / parts の有無で判定する）
+list_images() {
+  local d n
+  for d in "$IMGDIR"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    case "$n" in *.tmp|logs|lost+found) continue ;; esac
+    [ -f "$d/disk" ] || [ -f "$d/parts" ] || continue
+    printf '%s\n' "$n"
+  done | sort
+}
 
 select_image() {
   local -a imgs=(); mapfile -t imgs < <(list_images)
