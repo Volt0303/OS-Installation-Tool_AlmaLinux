@@ -35,12 +35,19 @@ ISO="${2:-$ROOT/build/fandf-osinstall.iso}"
 # --- 安全確認 ① パーティションではなくディスク全体か --------------------
 [ "$(lsblk -dno TYPE "$DEV")" = "disk" ] || die "$DEV はディスク全体ではありません（/dev/sdb のように指定）"
 
-# --- 安全確認 ② マウント中でないか（システムディスクの誤指定を防ぐ）----
-if lsblk -no MOUNTPOINTS "$DEV" 2>/dev/null | grep -q '[^[:space:]]'; then
-  c_err "$DEV には現在マウント中の領域があります。システムディスクの可能性があります。"
+# --- 安全確認 ② システム領域がマウントされていないか --------------------
+# / や /boot 等が乗っていれば、それはシステムディスク → 絶対に拒否する
+SYSMNT="$(lsblk -no MOUNTPOINTS "$DEV" 2>/dev/null \
+          | grep -Ex '/|/boot|/boot/efi|/home|/usr|/var|/etc|\[SWAP\]' || true)"
+if [ -n "$SYSMNT" ]; then
+  c_err "$DEV にはシステム領域（$(echo "$SYSMNT" | tr '\n' ' ')）がマウントされています。"
+  c_err "システムディスクを指定している可能性があります。"
   lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS "$DEV"
   die "中止しました"
 fi
+# それ以外（デスクトップによる自動マウント等）は書き込み前に解除する
+AUTOMNT="$(lsblk -no MOUNTPOINTS "$DEV" 2>/dev/null | grep '[^[:space:]]' || true)"
+[ -n "$AUTOMNT" ] && c_warn "  ※ 自動マウントを検出（書き込み前に解除します）: $(echo "$AUTOMNT" | tr '\n' ' ')"
 
 # --- 情報表示 ------------------------------------------------------------
 MODEL="$(lsblk -dno MODEL  "$DEV" | xargs)"
