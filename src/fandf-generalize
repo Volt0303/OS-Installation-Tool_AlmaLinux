@@ -52,6 +52,23 @@ del "$MP/etc/NetworkManager/system-connections/*"
 del "$MP/etc/udev/rules.d/70-persistent-net.rules"
 del "$MP/etc/udev/rules.d/80-net-name-slot.rules"
 
+# LVMデバイスファイル（AlmaLinux 9 以降）
+#   マスターの物理ディスク固有ID（型番＋シリアル）が記録されているため、
+#   別のディスクへ復元すると識別子が一致せず、initramfs の外で有効化される
+#   論理ボリューム（/home 等）をLVMが認識できなくなり起動不能になる。
+#   削除すると、復元先で全デバイスを走査する動作に戻る。
+echo "  - LVMデバイス情報を削除（別ディスクへの復元に対応）"
+del "$MP/etc/lvm/devices/system.devices"
+del "$MP/etc/lvm/archive/*"
+del "$MP/etc/lvm/backup/*"
+
+# 乱数シード：複製した全機が同じ種を持つのを避ける（初回起動時に再生成される）
+echo "  - 乱数シード等の機体固有情報を削除"
+del "$MP/var/lib/systemd/random-seed"
+del "$MP/var/lib/NetworkManager/secret_key"
+del "$MP/var/lib/NetworkManager/seen-bssids"
+del "$MP/var/lib/NetworkManager/*.lease"
+
 sync
 umount "$MP" && rmdir "$MP"
 
